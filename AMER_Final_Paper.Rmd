@@ -1,0 +1,1721 @@
+---
+title: "AMER_Final_Project_Replication&Extension codes"
+output: html_document
+---
+
+###Setting global options
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+###Loading neccessary libraries
+
+```{r loading libraries, message=FALSE}
+library(haven)
+library(dplyr)
+library(ggplot2)
+library(rdrobust)
+library(Hmisc)
+library(rdd)
+library(rdrobust)
+library(tidyverse)
+library(DescTools)
+library(Hmisc)
+library(gt)
+library(tibble)
+library(broom)
+library(lmtest)
+library(purrr)
+library(sandwich)
+library(patchwork)
+library(glue)
+library(modelsummary)
+library(kableExtra)
+```
+
+###Loading data sets
+```{r}
+elections_con_panel <- read_dta("elections_con_panel.dta")
+pols_lights_cons <-read_dta("pols_lights_cons.dta")
+mining_clearances_matches <- read_dta("mining_clearances_matches.dta")
+elections_long <-read_dta("elections_long.dta")
+stocks_elections_clean <- read_dta("stocks_elections_clean.dta")
+coalitions_party <- read_dta("coalitions_parties.dta")
+```
+
+```{r}
+elections_con_panel <- elections_con_panel %>% 
+  mutate(urbanization = 1- job_share_rural)
+
+elections_con_panel$state_id <- factor(elections_con_panel$state_id)  
+```
+
+#####BEGIN REPLICATION##########
+
+##Figure 2: Distribution of Running Variable(win magrin)
+
+```{r Figure2A}
+# Create a histogram
+election_con_panel_hist <- elections_con_panel %>% filter(between(margin,  -0.5, 0.5))
+
+Figure2A <- ggplot(election_con_panel_hist, aes(x = margin)) +
+    geom_histogram(binwidth = 0.02, fill = "white", color = "black") +
+    geom_vline(xintercept = 0, color = "red") +
+    theme_minimal() +
+    xlab("Margin") +
+    ylab("Frequency") +
+  labs(title="PanelA")
+
+Figure2A
+```
+
+```{r Figure2B}
+myDCdensity <- function(runvar, cutpoint, my_abline = 0){
+
+  # get the default plot
+  myplot <- DCdensity(runvar, cutpoint)
+  # 'additional graphical options to modify the plot'
+  abline(v = my_abline)
+  # return
+  return(myplot)
+}
+
+
+Figure2B<- myDCdensity(election_con_panel_hist$margin, 0, my_abline = 0)
+Figure2B <- Figure2B + title("Panel B")
+```
+
+##Replication Table 1: Summary Statistics
+
+```{r}
+# Set the 6th level as the base level
+elections_con_panel$state_id <- relevel(elections_con_panel$state_id, ref = '6')
+
+#fix road var #already in the original data
+#elections_con_panel<- elections_con_panel %>%
+ # mutate(pc91u_td_p_road=ifelse(pc91u_td_p_road > 1400, NA,pc91u_td_p_road))
+
+#Winsorize #already in the orginal data
+#elections_con_panel$pc91u_td_p_road <- Winsorize(elections_con_panel$pc91u_td_p_road, probs = c(0, 0.150), na.rm = TRUE)
+
+
+#convert all baseline EC vars to levels 
+elections_con_panel <- elections_con_panel %>%
+  mutate(across(starts_with("baseline"), 
+                ~ ifelse(. == baseline_fsize, baseline_fsize, exp(.))))
+
+
+```
+
+```{r}
+# Label vars for summary table and others
+label(elections_con_panel$baseline) <- "Baseline employment"
+label(elections_con_panel$baseline_gov) <- "Baseline public sector employment"
+label(elections_con_panel$baseline_count) <- "Number of establishments"
+label(elections_con_panel$baseline_fsize) <- "Mean firm size"
+label(elections_con_panel$pc91_pca_tot_p) <- "Baseline population"
+label(elections_con_panel$village_count) <- "Number of villages"
+label(elections_con_panel$town_count) <- "Number of towns"
+label(elections_con_panel$urbanization) <- "Urban population share"
+
+# Label vd stuff
+label(elections_con_panel$pc91_vd_app_pr) <- "Share of villages with paved access road"
+label(elections_con_panel$pc91_vd_power_supl) <- "Share of villages with power supply"
+label(elections_con_panel$p_sch_r91) <- "Rural primary schools per village"
+label(elections_con_panel$hosp_r91) <- "Rural hospitals per village"
+label(elections_con_panel$irr_share91) <- "Share of land that is irrigated"
+
+# Label td stuff
+label(elections_con_panel$pc91u_td_p_road) <- "Urban paved roads (km)"
+label(elections_con_panel$el_con91) <- "Urban electricity connections"
+label(elections_con_panel$p_sch_u91) <- "Urban primary schools"
+label(elections_con_panel$s_sch_u91) <- "Urban secondary schools"
+label(elections_con_panel$hosp_u91) <- "Urban hospitals"
+```
+
+```{r}
+# Define a vector with the names of the summary statistics variables
+sum_stat_vars <- c("baseline", "baseline_gov", "baseline_count", "baseline_fsize","pc91_pca_tot_p", "urbanization", "pc91_vd_app_pr", 
+                   "pc91_vd_power_supl", "p_sch_r91", "irr_share91", 
+                   "pc91u_td_p_road", "el_con91", "p_sch_u91")
+
+```
+
+```{r}
+# Set global bandwidth
+bandwidth <- 0.051
+
+# Set kernel_triangular
+elections_con_panel$kernel_tri <- with(elections_con_panel, ((bandwidth - abs(elections_con_panel$margin)) / bandwidth) * (abs(elections_con_panel$margin) < bandwidth))
+
+results <- map_df(sum_stat_vars, function(var) {
+
+    var_label <- label(elections_con_panel[[var]])
+
+    stats_0 <- elections_con_panel %>% 
+      filter(aligned == 0) %>% 
+      summarise(mean = mean(.data[[var]],na.rm = TRUE),
+                sd = sd(.data[[var]],na.rm=TRUE),
+                N = n())
+
+    mean1 <- stats_0$mean
+    semean1 <- stats_0$sd / sqrt(stats_0$N)
+
+    stats_1 <- elections_con_panel %>% 
+      filter(aligned == 1) %>% 
+      summarise(mean = mean(.data[[var]],na.rm = TRUE),
+                sd = sd(.data[[var]],na.rm=TRUE),
+                N = n())
+
+    mean2 <- stats_1$mean
+    semean2 <- stats_1$sd / sqrt(stats_1$N)
+
+    diff1 = mean2 - mean1
+
+    # Calculate standard error from regression using clusters
+    formula1 <- as.formula(paste(var, "~ aligned"))
+    model1 <- lm(formula1, data = elections_con_panel)
+    model1_clustered <- coeftest(model1, vcovCL(model1, cluster = ~state_id)) 
+    sediff1 <- model1_clustered[4]
+    t1 <- model1$coefficients["aligned"] / sediff1
+
+    # Run core RD spec
+    formula2 <- as.formula(paste(var, "~ aligned + margin + m_a + period + state_id + period:state_id"))
+    model2 <- lm(formula2, data = elections_con_panel, weights = kernel_tri)
+    model2_clustered <- coeftest(model2, vcovCL(model2, cluster = ~state_id))
+    sediff2 <- model2_clustered[2, 2]
+    estimate_b <- model2$coefficients["aligned"]
+    t2 <- model2$coefficients["aligned"] / sediff2
+   #Stata Standard error sample correction
+         c <- 3.419908/.69198736
+    t2_corrected = t2/c
+
+    # Create output
+    tibble(Variable = var_label,
+           Ruling_party_constituencies = round(mean2, 2),
+           Opposition_constituencies = round(mean1, 2),
+           #semean2 = round(semean2, 2),
+           #semean1 = round(semean1, 2),
+           #sediff1 = round(sediff1, 2),
+           t_stat_on_difference = round(t1, 2), 
+           RD_estimate = round(estimate_b,2),
+           t_stat_on_RD_estimate = round(t2_corrected,2))  
+})
+
+###some correction number for the t_stat_RD_estimate
+#STATA uses a finite sample correction for standard error that R does not use, and generally the cluster error calculation from STATA is also different regarding handling missing data values
+#https://www.stata.com/manuals14/u20.pdf#page=53
+
+
+```
+
+```{r Table Output}
+#Create Output table
+results %>%
+  gt() %>%
+  tab_header(
+    title = "Summary Statistics"
+  )
+```
+
+
+####Figure 4: Balance tests: baseline variables versus ruling party win margin#####
+
+```{r Panel_A}
+#balance_vars <- c("baseline", "ln_pop91", "urbanization","pc91_vd_power_supl", "pc91_vd_app_pr", "p_sch_r91")
+#app_balance_vars <- c("baseline_gov", "baseline_count", "baseline_fsize", "irr_share91", "pc91u_td_p_road", "el_con91", "p_sch_u91")
+
+####PANEL A#######
+elections_con_panel1 <- elections_con_panel %>% 
+  mutate(baseline = log(baseline))
+
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel1 %>% filter(between(margin,  -0.25, 0.25))
+  
+model_figure4 <- lm(baseline ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$baseline - elections_con_panel1$pr
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelA <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.4, -0.2, 0, 0.2, 0.4), labels = c("-0.4", "-0.2", "0", "0.2", "0.4"),
+                     limits = c(-0.4, 0.4)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel A: Baseline log employment") +
+  theme_minimal()
+```
+
+```{r Panel_B}
+####PANEL B#######
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25))
+  
+model_figure4 <- lm(ln_pop91 ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$ln_pop91 - elections_con_panel1$pr
+
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelB <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.3, -0.2, -0.1, 0, 0.1), labels = c("-0.3","-0.2", "-0.1", "0", "0.1"),
+                     limits = c(-0.3, 0.133)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel B: Baseline log population") +
+  theme_minimal()
+```
+
+```{r Panel_C}
+####PANEL C#######
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25))
+  
+model_figure4 <- lm(urbanization ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$urbanization - elections_con_panel1$pr
+
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelC <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.2, -0.15, -0.1, -0.05, 0, 0.05), labels = c("-0.2", "-0.15", "-0.1", "-0.05", "0"," 0.05"),
+                     limits = c(-0.2, 0.07)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel C: Urbanization rate") +
+  theme_minimal()
+```
+
+```{r Panel_D}
+####PANEL D#######
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25)) %>% filter(!is.na(pc91_vd_power_supl))
+  
+model_figure4 <- lm(pc91_vd_power_supl ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$pc91_vd_power_supl - elections_con_panel1$pr
+
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelD <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.05, 0, 0.05, 0.1), labels = c("-0.05", "0", "0.05", "0.1"),
+                     limits = c(-0.05, 0.1)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel D: Share of villages with power") +
+  theme_minimal()
+```
+
+```{r Panel_E}
+####PANEL E#######
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25))%>% filter(!is.na(pc91_vd_app_pr))
+  
+model_figure4 <- lm(pc91_vd_app_pr ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$pc91_vd_app_pr - elections_con_panel1$pr
+
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelE <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.05, 0, 0.05, 0.1), labels = c("-0.05", "0", "0.05", "0.1"),
+                     limits = c(-0.05, 0.1)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel E: Share of villages accessible by paved road") +
+  theme_minimal()
+```
+
+```{r Panel_F}
+####PANEL F#######
+# Restrict sample to the specified range
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25)) %>% 
+  filter(!is.na(p_sch_r91))
+  
+model_figure4 <- lm(p_sch_r91 ~ state_id, data=elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure4, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$p_sch_r91 - elections_con_panel1$pr
+
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelF <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.2, 0, 0.2), labels = c("-0.2", "0", "0.2")) +
+    scale_y_continuous(breaks = c(-0.05, 0, 0.05, 0.1), labels = c("-0.05", "0", "0.05", "0.1"),
+                     limits = c(-0.05, 0.1)) +
+  labs(x = "", 
+       y = "",
+       title = "Panel F: Primary school per village") +
+  theme_minimal()
+```
+
+```{r Combined Graphs, message=FALSE}
+# Combine the plots
+combined_plot <- PanelA + PanelB + PanelC + PanelD + PanelE + PanelF + 
+  plot_layout(ncol = 2, nrow = 3)
+```
+
+```{r warning=FALSE}
+# Print the combined plot
+combined_plot
+```
+
+####Table 2: Effect of ruling party status on log employement growth###
+
+```{r Table 2}
+#define bandwidth
+bandwidth <- 0.051
+
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id, data= elections_con_panel, weights = kernel_tri)
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+model2_1_clustered <- coeftest(model2_1, vcovCL(model2_1 ,cluster = ~election)) 
+
+#Model2
+elections_con_panel$ln_baseline <- log(elections_con_panel$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= elections_con_panel, weights = kernel_tri)
+model2_2_clustered <- coeftest(model2_2, vcovCL(model2_2 ,cluster = ~election)) 
+
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id, data=elections_con_panel)
+model2_3_clustered <- coeftest(model2_3, vcovCL(model2_3 ,cluster = ~election)) 
+#no finite sample correction in stata, global method -> sample big enough
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data=elections_con_panel)
+model2_4_clustered <-vcovCL(model2_4 ,cluster = ~election)
+#no finite sample correction in stata, global method -> sample big enough
+
+##LIGHTS LOCAL LINEAR##
+pols_lights_cons$sgroup <- factor(pols_lights_cons$sgroup)  
+pols_lights_cons$election_number <- factor(pols_lights_cons$election_number)  
+
+#Model1
+model2_5 <- lm (ln_diff ~ aligned + margin + m_a + election_number + sgroup + election_number:sgroup, data = pols_lights_cons, weights= kernel_tri)
+model2_5_clustered <- coeftest(model2_5, vcovCL(model2_5 ,cluster = ~sgroup)) 
+correction <-  (0.0169097/ 4.0657e-03)
+
+#Model2 
+model2_6 <- lm (ln_diff ~ aligned + margin + m_a + ln_baseline + election_number + sgroup + election_number:sgroup , data = pols_lights_cons, weights= kernel_tri)
+model2_6_clustered <- coeftest(model2_6, vcovCL(model2_6 ,cluster = ~sgroup)) 
+correction2 <-  0.0164474/0.00395386 
+
+#Replication of table
+models <- list(
+"(1)" = model2_1,
+"(2)" = model2_2,
+"(3)" = model2_3,
+"(4)" = model2_4,
+"(5)" = model2_5,
+"(6)" = model2_6
+)
+
+#Labels
+coef_labels <- c( "aligned" = "Ruling party",
+ "margin" = "Margin of victory",
+"m_a" = "Margin x ruling",
+"ln_baseline" = "Baseline log employement")
+
+#Prepare rows to add later
+rows <- tibble::tribble(~term, ~Multivariate,~Multivariate, ~Multivariate,~Multivariate,~Multivariate,~Multivariate,
+  'State-year fixed effects', 'Yes','Yes','Yes','Yes','Yes','Yes',
+  'Constituency controls', 'No', 'Yes','No', 'Yes','No', 'Yes')
+attr(rows, 'position') <- c(9,10)
+
+
+# Adding custom titles for each pair of models
+titles <- c("Jobs:Local Linear", "Jobs: Polynomial", "Lights: Local Linear")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+# Define a functions that applies vcovCL to model 1-2
+vcov_model1 <- function(model) {
+    vcovCL(model, cluster = ~election)*(c^2)
+}
+
+# Define a functions that applies vcovCL to model 3-4
+vcov_model2 <- function(model) {
+    vcovCL(model, cluster = ~election)
+}
+
+# Define a functions that applies vcovCL to model 5
+vcov_model3 <- function(model) {
+    vcovCL(model, cluster = ~sgroup)*(correction^2)
+}
+
+# Define a functions that applies vcovCL to model 6
+vcov_model4 <- function(model) {
+    vcovCL(model, cluster = ~sgroup)*(correction2^2)
+}
+
+#Apply lists
+vcov_list <- list(vcov_model1, vcov_model1, vcov_model2, vcov_model2, vcov_model3, vcov_model4)  
+
+#Final Table
+modelsummary(models,
+             title = "Table 2: Effect of ruling party status on log employement growth",
+             coef_map = coef_labels,
+             add_rows = rows,
+             vcov = vcov_list,
+             gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+
+```
+
+###Figure 5: Log Employement growth versus win margin of ruling party canditate### 
+```{r Figure 5 Panel A}
+elections_con_panel1 <- elections_con_panel %>% filter(between(margin,  -0.25, 0.25))
+model_figure5 <- lm(growth ~ state_id + period + state_id:period + baseline, data = elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure5, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$growth  - elections_con_panel1$pr
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+Panel5A <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.25, -0.2, -0.15,-0.1,-0.05,0,0.05, 0.1, 0.15, 0.2,0.25), labels = c("-0.25", "-0.2", "-0.15","-0.1","-0.05","0","0.05", "0.1", "0.15", "0.2","0.25")) +
+    scale_y_continuous(breaks = c(-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03), labels =c("-0.03", "-0.02", "-0.01", "0", "0.01", "0.02", "0.03"),
+                     limits = c(-0.03, 0.03)) +
+  labs(x = "Margin", 
+       y = "Annualized log employement growth",
+       title = "Panel A: Employement growth") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+```
+
+```{r Figure 5 Panel B}
+pols_lights_cons1 <- pols_lights_cons %>% filter(between(margin,  -0.25, 0.25))
+model_figure5B <- lm(ln_diff ~ sgroup + election_number + sgroup:election_number +  ln_baseline, data = pols_lights_cons1)
+pols_lights_cons1$pr <- predict(model_figure5B, newdata = pols_lights_cons1)
+pols_lights_cons1$rs <- pols_lights_cons1$ln_diff - pols_lights_cons1$pr
+
+# Sort data and create margin_index
+pols_lights_cons1 <- pols_lights_cons1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- pols_lights_cons1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- pols_lights_cons1 %>% filter(margin < 0)
+right_data <- pols_lights_cons1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+Panel5B <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.25, -0.2, -0.15,-0.1,-0.05,0,0.05, 0.1, 0.15, 0.2,0.25), labels = c("-0.25", "-0.2", "-0.15","-0.1","-0.05","0","0.05", "0.1", "0.15", "0.2","0.25")) +
+    scale_y_continuous(breaks = c(-0.1, -0.05, 0, 0.05), labels =c("-0.1", "-0.05", "0", "0.05"),
+                     limits = c(-0.1, 0.05)) +
+  labs(x = "Margin", 
+       y = "Change in log luminosity",
+       title = "Panel B: Luminosity growth") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+```
+
+```{r Combined Plot Figure 5}
+# Combine the plots
+combined_plot2 <- Panel5A + Panel5B +
+  plot_layout(ncol = 1, nrow = 2) 
+
+# Print the combined plot
+print(combined_plot2) 
+```
+
+###Table 6: Effect of ruling party status on granting of clearances for mining activities###
+
+```{r}
+mining_clearances_matches<-mining_clearances_matches %>% 
+  filter(cytag != 0)
+mining_clearances_matches$egroup <- factor(mining_clearances_matches$egroup)
+mining_clearances_matches$egroup <- relevel(mining_clearances_matches$egroup, ref = 1)
+
+mining_clearances_matches <- mining_clearances_matches %>% 
+  mutate(kernel_tri = if_else(abs(margin) < 0.051, 
+                              (0.051 - abs(margin)) / 0.051, 
+                              0)) 
+#Permit dummy (1)
+model6_1 <- lm(any_good_events ~ aligned + margin + m_a, data= mining_clearances_matches, weights = kernel_tri)
+correction6 <- 3.89308
+vcov_model6 <- function(model) {
+    vcovCL(model, cluster = ~egroup)*(correction6^2)
+}
+sqrt(diag(vcov_model6(model6_1)))
+
+#Permit dummy(2)
+model6_2 <- lm(any_good_events ~ aligned + margin + m_a + bjp + inc + egroup, data= mining_clearances_matches, weights = kernel_tri)
+sqrt(diag(vcov_model6(model6_2)))
+
+#log permit area granted (3)
+model6_3 <-lm(ln_con_area_good ~ aligned + margin + m_a, weights = kernel_tri, data= mining_clearances_matches)
+sqrt(diag(vcov_model6(model6_3)))
+
+
+#log permit area granted (4)
+model6_4 <- lm(ln_con_area_good ~ aligned + margin + m_a + bjp + inc + egroup, weights= kernel_tri, data= mining_clearances_matches)
+sqrt(diag(vcov_model6(model6_4)))
+```
+
+```{r Replication of table }
+#Replication of table
+models <- list(
+"(1)" = model6_1,
+"(2)" = model6_2,
+"(3)" = model6_3,
+"(4)" = model6_4
+)
+
+#Labels
+coef_labels <- c("aligned" = "Ruling party",
+ "margin" = "Margin of victory",
+"m_a" = "Margin x ruling")
+
+#Prepare rows to add later
+rows <- tibble::tribble(~term, ~Multivariate,~Multivariate, ~Multivariate,~Multivariate,
+  'State-election fixed effects', 'No', 'Yes','No', 'Yes')
+attr(rows, 'position') <- c(7)
+
+
+# Adding custom titles for each pair of models
+titles <- c("Permit dummy", "log permit area granted")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+#Apply lists
+vcov_list <- list(vcov_model6, vcov_model6, vcov_model6, vcov_model6)  
+
+#Final Table
+modelsummary(models,
+             title = "Table 6: Effect of ruling party status on granting of clearances for mining activities",
+             coef_map = coef_labels,
+             add_rows = rows,
+             vcov = vcov_list,
+             gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+
+```
+
+```{r}
+#####BEGIN EXTENTION##########
+extention_panel <- read_dta("elections_con_panel.dta")
+# analysis across states --------------------------------------------------
+#Filter for states
+extention_panel |> group_by(pc01_state_name) |> count() |>
+print(n = 26)
+#we have 26 States in our dataset
+extention_panel |>
+group_by(pc01_state_name) |>
+summarise(avg_pop = mean(ln_pop91, na.rm = TRUE)) |> arrange(avg_pop) |>
+print(n = 26)
+#Uttar Pradesh has the highest pop and Goa the smallest.
+#Tamil Nadu southernmost state and Himachal Pradesh northernmost state.
+extention_panel$election <- factor(extention_panel$election)
+#differ between the two states
+hp_panel <- extention_panel %>% filter(pc01_state_name == "Himachal Pradesh") 
+tn_panel <- extention_panel %>% filter(pc01_state_name == "Tamil Nadu")
+###Himachal Pradesh### ###JOBS LOCAL LINEAR### #Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period, data = hp_panel, weights = kernel_tri)
+#Model2 - with controls
+hp_panel$ln_baseline <- log(hp_panel$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data = hp_panel, weights = kernel_tri)
+
+###Tamil Nadu### #Model1
+model2_3 <- lm(growth ~ aligned + margin + m_a + period, data= tn_panel, weights = kernel_tri)
+#Model2
+tn_panel$ln_baseline <- log(tn_panel$baseline)
+model2_4 <- lm(growth ~ aligned + margin + m_a + ln_baseline + pc91_vd_app_pr + pc91_vd_power_supl +
++ p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= tn_panel, weights = kernel_tri)
+#period removed due to singularites
+#Replication of table
+models <- list(
+  "(1)" = model2_1,
+  "(2)" = model2_2,
+  "(3)" = model2_3,
+  "(4)" = model2_4
+)
+#Labels
+coef_labels <- c( "aligned" = "Ruling party", "margin" = "Margin of victory",
+"m_a" = "Margin x ruling",
+"ln_baseline" = "Baseline log employement")
+#Prepare rows to add later
+rows <- tibble::tribble(~term, ~Multivariate,~Multivariate, ~Multivariate, ~Multivariate, 'Constituency controls', 'No', 'Yes','No', 'Yes')
+attr(rows, 'position') <- c(9)
+#names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - State {seq_along(models)}")
+#Final extended Table 2.1
+table2_1<-modelsummary(models,
+                       coef_map = coef_labels,
+                       add_rows = rows,
+                       vcov = "HC1",
+                       gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors|F")
+final_table3 <- table2_1 %>% 
+  kable_styling(full_width = F, position = "center") %>%
+  add_header_above(c(" " = 1, "Himachal Pradesh" = 2, " Tamil Nadu" = 2))
+
+#urban -------------------------------------------------
+#Restrict sample to the specified range
+
+urban_elections_con_panel <- extention_panel %>% 
+  filter(between(margin, -0.25, 0.25))
+
+quantile(urban_elections_con_panel$baseline_urban, na.rm = T)
+
+
+urban_elections_con_panel <- urban_elections_con_panel %>% 
+  filter(baseline_urban >= 9.248671 )
+
+model_urban <- lm(growth ~ state_id + period + state_id:period + baseline, data = urban_elections_con_panel)
+
+urban_elections_con_panel$pr <- predict(model_urban, newdata = urban_elections_con_panel)
+
+##urban_elections_con_panel$pr <- predict(model_urban, newdata = urban_elections_con_panel)
+
+urban_elections_con_panel$rs <- urban_elections_con_panel$growth - urban_elections_con_panel$pr
+
+#Sort data and create margin_index
+urban_elections_con_panel <- urban_elections_con_panel %>%
+  arrange(margin) %>%
+  mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+#Aggregate data by margin_index
+urban_aggregated_data <- urban_elections_con_panel %>% group_by(margin_index) %>%
+  dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                   var_mean = mean(rs, na.rm=TRUE)) %>%
+  ungroup()
+#Polynomial regression and prediction for both sides of the margin
+left_urban_data <- urban_elections_con_panel %>% 
+  filter(margin < 0) 
+right_urban_data <- urban_elections_con_panel %>% 
+  filter(margin > 0)
+#urban_data <- urban_elections_con_panel |> filter(margin > 0) 
+#urban_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = edo_data)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_urban_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_urban_data)
+left_pred <- predict(left_model, newdata = left_urban_data, interval = "confidence") 
+right_pred <- predict(right_model, newdata = right_urban_data, interval = "confidence")
+left_urban_data$prediction <- left_pred[, "fit"] 
+left_urban_data$lwr <-left_pred[, "lwr"] 
+left_urban_data$upr<-left_pred[, "upr"]
+right_urban_data$prediction <- right_pred[, "fit"] 
+right_urban_data$lwr <- right_pred[, "lwr"] 
+right_urban_data$upr <- right_pred[, "upr"]
+Urban_panel <- ggplot(urban_aggregated_data, aes(x = margin_mean, y = var_mean)) + geom_point() +
+geom_line(data = left_urban_data, aes(x = margin, y = prediction), color = "black") +
+geom_line(data = right_urban_data, aes(x = margin, y = prediction), color = "black") +
+geom_line(data = right_urban_data, aes(x = margin, y = lwr), color = "grey") +
+geom_line(data = right_urban_data, aes(x = margin, y = upr), color = "grey") +
+geom_line(data = left_urban_data, aes(x = margin, y = lwr), color = "grey") +
+geom_line(data = left_urban_data, aes(x = margin, y = upr), color = "grey") +
+labs(x = "Margin",
+     y = "Annualized log employement growth",
+     title = "Panel A : Employment growth of urban areas") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+
+# rural ----------------------------------------------------------
+test <- extention_panel %>% filter(between(margin, -0.25, 0.25))
+rural_elections_con_panel <- extention_panel %>% 
+  filter(between(margin, -0.25, 0.25))
+
+quantile(rural_elections_con_panel$baseline_urban, na.rm = T)
+
+rural_elections_con_panel <- rural_elections_con_panel |> filter(baseline_urban <= 7.929216)
+model_rural <- lm(growth ~ state_id + period + state_id:period + baseline, data = rural_elections_con_panel)
+
+rural_elections_con_panel$pr <- predict(model_rural, newdata = rural_elections_con_panel)
+
+rural_elections_con_panel$rs <- rural_elections_con_panel$growth - rural_elections_con_panel$pr
+# Sort data and create margin_index
+rural_elections_con_panel <- rural_elections_con_panel %>%
+arrange(margin) %>%
+mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+# Aggregate data by margin_index
+rural_aggregated_data <- rural_elections_con_panel %>% group_by(margin_index) %>%
+dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+var_mean = mean(rs, na.rm=TRUE)) %>%
+ungroup()
+# Polynomial regression and prediction for both sides of the margin
+left_rural_data <- rural_elections_con_panel %>% filter(margin < 0) 
+right_rural_data <- rural_elections_con_panel %>% filter(margin > 0)
+#rural_data <- rural_elections_con_panel |> filter(margin > 0) #rural_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = rural_data)
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_rural_data) 
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_rural_data)
+
+left_pred <- predict(left_model, newdata = left_rural_data, interval = "confidence") 
+right_pred <- predict(right_model, newdata = right_rural_data, interval = "confidence")
+left_rural_data$prediction <- left_pred[, "fit"] 
+left_rural_data$lwr <-left_pred[, "lwr"] 
+left_rural_data$upr<-left_pred[, "upr"]
+right_rural_data$prediction <- right_pred[, "fit"] 
+right_rural_data$lwr <- right_pred[, "lwr"] 
+right_rural_data$upr <- right_pred[, "upr"]
+
+Rural_panel <- ggplot(rural_aggregated_data, aes(x = margin_mean, y = var_mean)) + 
+  geom_point() +
+  geom_line(data = left_urban_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_urban_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_urban_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_urban_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_urban_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_urban_data, aes(x = margin, y = upr), color = "grey") +
+  labs(x = "Margin",
+      y = "Annualized log employement growth",
+  title = "Panel B : Employment growth of rural areas") + 
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+#combine both plots
+combined_plot_extended <- Urban_panel + Rural_panel + plot_layout(ncol = 1, nrow = 2)
+
+# urban rural model extension/ Extended Table 2
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id + baseline_urban + aligned:baseline_urban, data= extention_panel, weights = kernel_tri)
+
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+
+#Model2
+extention_panel$ln_baseline <- log(extention_panel$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91 + baseline_urban + aligned:baseline_urban, data= extention_panel, weights = kernel_tri)
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + baseline_urban + aligned:baseline_urban, data=extention_panel)
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91 + baseline_urban + aligned:baseline_urban, data=extention_panel)
+#no finite sample correction in stata, global method -> sample big enough
+
+#Replication of table
+  models <- list(
+        "(1)" = model2_1,
+        "(2)" = model2_2,
+        "(3)" = model2_3,
+        "(4)" = model2_4)
+  #Labels
+  coef_labels <- c("aligned" = "Ruling party",
+                   "margin" = "Margin of victory",
+                   "m_a" = "Margin x ruling",
+                   "baseline_urban" = "Urban",
+                   "aligned:baseline_urban" = "Ruling party X Urban",
+                   "ln_baseline" = "Baseline log employement")
+  
+#Prepare rows to add later
+  rows <- tibble::tribble(~term, ~Multivariate,~Multivariate, ~Multivariate,~Multivariate,
+                          'State-year fixed effects', 'Yes','Yes','Yes','Yes',
+                          'Constituency controls', 'No', 'Yes','No', 'Yes')
+  attr(rows, 'position') <- c(12,13)
+  
+  # Define a functions that applies vcovCL to model 1-2
+  vcov_model1 <- function(model) {
+    vcovCL(model, cluster = ~election)*(c^2)
+  }
+  
+  # Define a functions that applies vcovCL to model 3-4
+  vcov_model2 <- function(model) {
+    vcovCL(model, cluster = ~election)
+  }
+  
+  #Apply lists
+  vcov_list <- list(vcov_model1, vcov_model1, vcov_model2, vcov_model2)
+  
+  #Final Extended Table 2.2
+  table2_2<- modelsummary(models,
+                          coef_map = coef_labels,
+                          add_rows = rows,
+                          vcov = vcov_list,
+                          gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors") %>%
+    row_spec(c(7:10), background = 'lightblue')
+  
+  final_table4 <- table2_2 %>%
+    kable_styling(full_width = F, position = "center") %>%
+    add_header_above(c(" " = 1, "Jobs: Local Linear" = 2, "Jobs: Polynomial" = 2))
+```
+
+```{r}
+## Classify and label the data by baseline_fsize
+
+percentiles <- quantile(elections_con_panel$baseline_fsize, c(0.3, 0.7))
+
+# Create firm_size_category based on percentiles
+elections_con_panel$firm_size_category <- cut(elections_con_panel$baseline_fsize,
+                                       breaks = c(-Inf, percentiles[1], percentiles[2], Inf),
+                                       labels = c("Small", "Medium", "Large"),
+                                       include.lowest = TRUE)
+
+elections_con_panel_categorySmall <- 
+  elections_con_panel[elections_con_panel$firm_size_category == "Small",]
+
+elections_con_panel_categoryMedium <- 
+  elections_con_panel[elections_con_panel$firm_size_category == "Medium", ]
+
+elections_con_panel_categoryLarge <-
+  elections_con_panel[elections_con_panel$firm_size_category == "Large", ]
+
+elections_con_panel$firm_size_category <- factor(elections_con_panel$firm_size_category, 
+                                                  levels = c("Small", "Medium", "Large"))
+```
+
+
+```{r}
+## PanelA: Employment growth of average size of firms classified as small
+
+elections_con_panel1 <- elections_con_panel_categorySmall %>% filter(between(margin,  -0.25, 0.25))
+model_figure5 <- lm(growth ~ state_id + period + state_id:period + baseline + baseline_fsize , data = elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure5, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$growth  - elections_con_panel1$pr
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelA <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.25, -0.2, -0.15,-0.1,-0.05,0,0.05, 0.1, 0.15, 0.2,0.25), labels = c("-0.25", "-0.2", "-0.15","-0.1","-0.05","0","0.05", "0.1", "0.15", "0.2","0.25")) +
+    scale_y_continuous(breaks = c(-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03), labels =c("-0.03", "-0.02", "-0.01", "0", "0.01", "0.02", "0.03"),
+                     limits = c(-0.03, 0.03)) +
+  labs(x = "Margin", 
+       y = "Annualized log employement growth",
+       title = "PanelA: Employment growth of average size of firms classified as small") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+```
+
+
+```{r}
+PanelA
+```
+
+```{r}
+## PanelB: Employment growth of average size of firms classified as medium
+
+elections_con_panel1 <- elections_con_panel_categoryMedium %>% filter(between(margin,  -0.25, 0.25))
+model_figure5 <- lm(growth ~ state_id + period + state_id:period + baseline + baseline_fsize, data = elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure5, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$growth  - elections_con_panel1$pr
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelB<- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.25, -0.2, -0.15,-0.1,-0.05,0,0.05, 0.1, 0.15, 0.2,0.25), labels = c("-0.25", "-0.2", "-0.15","-0.1","-0.05","0","0.05", "0.1", "0.15", "0.2","0.25")) +
+    scale_y_continuous(breaks = c(-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03), labels =c("-0.03", "-0.02", "-0.01", "0", "0.01", "0.02", "0.03"),
+                     limits = c(-0.03, 0.03)) +
+  labs(x = "Margin", 
+       y = "Annualized log employement growth",
+       title = "PanelB : Employment growth of average size of firms classified as medium") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+```
+
+```{r}
+PanelB
+```
+
+```{r}
+## PanelC: Employment growth of average size of firms classified as large
+
+elections_con_panel1 <- elections_con_panel_categoryLarge %>% filter(between(margin,  -0.25, 0.25))
+model_figure5 <- lm(growth ~ state_id + period + state_id:period + baseline + baseline_fsize, data = elections_con_panel1)
+elections_con_panel1$pr <- predict(model_figure5, newdata = elections_con_panel1)
+elections_con_panel1$rs <- elections_con_panel1$growth  - elections_con_panel1$pr
+
+# Sort data and create margin_index
+elections_con_panel1 <- elections_con_panel1 %>% 
+    arrange(margin) %>%
+    mutate(margin_index = cut(margin, breaks = pretty(range(margin), 50), include.lowest = TRUE))
+
+# Aggregate data by margin_index
+aggregated_data <- elections_con_panel1 %>% 
+    group_by(margin_index) %>%
+     dplyr::summarize(margin_mean = mean(margin,na.rm=TRUE),
+                      var_mean = mean(rs, na.rm=TRUE)) %>% 
+                        ungroup()
+
+# Polynomial regression and prediction for both sides of the margin
+left_data <- elections_con_panel1 %>% filter(margin < 0)
+right_data <- elections_con_panel1 %>% filter(margin > 0)
+
+left_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = left_data)
+right_model <- lm(rs ~ poly(margin, 4, raw = TRUE), data = right_data)
+
+
+left_pred <- predict(left_model, newdata = left_data, interval = "confidence")
+right_pred <- predict(right_model, newdata = right_data, interval = "confidence")
+
+left_data$prediction <- left_pred[, "fit"]
+left_data$lwr <-left_pred[, "lwr"]
+left_data$upr<-left_pred[, "upr"]
+
+right_data$prediction <- right_pred[, "fit"]
+right_data$lwr <- right_pred[, "lwr"]
+right_data$upr <- right_pred[, "upr"]
+
+PanelC <- ggplot(aggregated_data, aes(x = margin_mean, y = var_mean)) +
+  geom_point() +
+  geom_line(data = left_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = prediction), color = "black") +
+  geom_line(data = right_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = right_data, aes(x = margin, y = upr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = lwr), color = "grey") +
+  geom_line(data = left_data, aes(x = margin, y = upr), color = "grey") +
+  scale_x_continuous(breaks = c(-0.25, -0.2, -0.15,-0.1,-0.05,0,0.05, 0.1, 0.15, 0.2,0.25), labels = c("-0.25", "-0.2", "-0.15","-0.1","-0.05","0","0.05", "0.1", "0.15", "0.2","0.25")) +
+    scale_y_continuous(breaks = c(-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03), labels =c("-0.03", "-0.02", "-0.01", "0", "0.01", "0.02", "0.03"),
+                     limits = c(-0.03, 0.03)) +
+  labs(x = "Margin", 
+       y = "Annualized log employement growth",
+       title = "PanelC: Employment growth of average size of firms classified as large") +
+  theme_minimal() +
+  geom_vline(xintercept = 0)
+```
+
+```{r}
+PanelC
+```
+
+```{r}
+## Table6 Effect of ruling party status on log employment growth (small avg firmsize)
+
+#define bandwidth
+bandwidth <- 0.051
+
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id, data= elections_con_panel_categorySmall, weights = kernel_tri)
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+model2_1_clustered <- coeftest(model2_1, vcovCL(model2_1 ,cluster = ~election)) 
+
+#Model2
+elections_con_panel_categorySmall$ln_baseline <- log(elections_con_panel_categorySmall$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= elections_con_panel_categorySmall, weights = kernel_tri)
+model2_2_clustered <- coeftest(model2_2, vcovCL(model2_2 ,cluster = ~election)) 
+
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id , data=elections_con_panel_categorySmall)
+model2_3_clustered <- coeftest(model2_3, vcovCL(model2_3 ,cluster = ~election)) 
+#no finite sample correction in stata, global method -> sample big enough
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data=elections_con_panel_categorySmall)
+model2_4_clustered <-vcovCL(model2_4 ,cluster = ~election)
+#no finite sample correction in stata, global method -> sample big enough
+
+##LIGHTS LOCAL LINEAR##
+pols_lights_cons$sgroup <- factor(pols_lights_cons$sgroup)  
+pols_lights_cons$election_number <- factor(pols_lights_cons$election_number)  
+
+#Model1
+model2_5 <- lm (ln_diff ~ aligned + margin + m_a + election_number + sgroup + election_number:sgroup, data = pols_lights_cons, weights= kernel_tri)
+model2_5_clustered <- coeftest(model2_5, vcovCL(model2_5 ,cluster = ~sgroup)) 
+correction <-  (0.0169097/ 4.0657e-03)
+
+#Model2 
+model2_6 <- lm (ln_diff ~ aligned + margin + m_a + ln_baseline + election_number + sgroup + election_number:sgroup , data = pols_lights_cons, weights= kernel_tri)
+model2_6_clustered <- coeftest(model2_6, vcovCL(model2_6 ,cluster = ~sgroup)) 
+correction2 <-  0.0164474/0.00395386 
+
+# Replication of table (excluding model2_5 and model2_6)
+models <- list(
+  "(1)" = model2_1,
+  "(2)" = model2_2,
+  "(3)" = model2_3,
+  "(4)" = model2_4
+)
+
+# Labels
+coef_labels <- c(
+  "aligned" = "Ruling party",
+  "margin" = "Margin of victory",
+  "m_a" = "Margin x ruling",
+  "ln_baseline" = "Baseline log employment"
+)
+
+# Rows to add later
+rows <- tibble::tribble(
+  ~term, ~Multivariate, ~Multivariate, ~Multivariate, ~Multivariate,
+  'State-year fixed effects', 'Yes', 'Yes', 'Yes', 'Yes',
+  'Constituency controls', 'No', 'Yes', 'No', 'Yes'
+)
+attr(rows, 'position') <- c(9, 10)
+
+# Adding custom titles for each pair of models
+titles <- c("Jobs: Local Linear", "Jobs: Polynomial")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+# Define vcov functions for models
+vcov_model1 <- function(model) {
+  vcovCL(model, cluster = ~election) * (c^2)
+}
+
+vcov_model2 <- function(model) {
+  vcovCL(model, cluster = ~election)
+}
+
+# Apply lists
+vcov_list <- list(vcov_model1, vcov_model2, vcov_model2, vcov_model2)
+
+# Final Table
+modelsummary(
+  models,
+  title = "Table 6: Effect of ruling party status on log employment growth (small avg firmsize)",
+  coef_map = coef_labels,
+  add_rows = rows,
+  vcov = vcov_list,
+  gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+```
+
+```{r}
+## Table7 Effect of ruling party status on log employment growth (medium avg firmsize)
+
+#define bandwidth
+bandwidth <- 0.051
+
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id , data= elections_con_panel_categoryMedium, weights = kernel_tri)
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+model2_1_clustered <- coeftest(model2_1, vcovCL(model2_1 ,cluster = ~election)) 
+
+#Model2
+elections_con_panel_categoryMedium$ln_baseline <- log(elections_con_panel_categoryMedium$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= elections_con_panel_categoryMedium, weights = kernel_tri)
+model2_2_clustered <- coeftest(model2_2, vcovCL(model2_2 ,cluster = ~election)) 
+
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id , data=elections_con_panel_categoryMedium)
+model2_3_clustered <- coeftest(model2_3, vcovCL(model2_3 ,cluster = ~election)) 
+#no finite sample correction in stata, global method -> sample big enough
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data=elections_con_panel_categoryMedium)
+model2_4_clustered <-vcovCL(model2_4 ,cluster = ~election)
+#no finite sample correction in stata, global method -> sample big enough
+
+##LIGHTS LOCAL LINEAR##
+pols_lights_cons$sgroup <- factor(pols_lights_cons$sgroup)  
+pols_lights_cons$election_number <- factor(pols_lights_cons$election_number)  
+
+#Model1
+model2_5 <- lm (ln_diff ~ aligned + margin + m_a + election_number + sgroup + election_number:sgroup, data = pols_lights_cons, weights= kernel_tri)
+model2_5_clustered <- coeftest(model2_5, vcovCL(model2_5 ,cluster = ~sgroup)) 
+correction <-  (0.0169097/ 4.0657e-03)
+
+#Model2 
+model2_6 <- lm (ln_diff ~ aligned + margin + m_a + ln_baseline + election_number + sgroup + election_number:sgroup , data = pols_lights_cons, weights= kernel_tri)
+model2_6_clustered <- coeftest(model2_6, vcovCL(model2_6 ,cluster = ~sgroup)) 
+correction2 <-  0.0164474/0.00395386 
+
+# Replication of table (excluding model2_5 and model2_6)
+models <- list(
+  "(1)" = model2_1,
+  "(2)" = model2_2,
+  "(3)" = model2_3,
+  "(4)" = model2_4
+)
+
+# Labels
+coef_labels <- c(
+  "aligned" = "Ruling party",
+  "margin" = "Margin of victory",
+  "m_a" = "Margin x ruling",
+  "ln_baseline" = "Baseline log employment"
+)
+
+# Rows to add later
+rows <- tibble::tribble(
+  ~term, ~Multivariate, ~Multivariate, ~Multivariate, ~Multivariate,
+  'State-year fixed effects', 'Yes', 'Yes', 'Yes', 'Yes',
+  'Constituency controls', 'No', 'Yes', 'No', 'Yes'
+)
+attr(rows, 'position') <- c(9, 10)
+
+# Adding custom titles for each pair of models
+titles <- c("Jobs: Local Linear", "Jobs: Polynomial")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+# Define vcov functions for models
+vcov_model1 <- function(model) {
+  vcovCL(model, cluster = ~election) * (c^2)
+}
+
+vcov_model2 <- function(model) {
+  vcovCL(model, cluster = ~election)
+}
+
+# Apply lists
+vcov_list <- list(vcov_model1, vcov_model2, vcov_model2, vcov_model2)
+
+# Final Table
+modelsummary(
+  models,
+  title = "Table 7: Effect of ruling party status on log employment growth (medium avg firmsize)",
+  coef_map = coef_labels,
+  add_rows = rows,
+  vcov = vcov_list,
+  gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+```
+
+```{r}
+## Table8 Effect of ruling party status on log employment growth (large avg firmsize)
+
+#define bandwidth
+bandwidth <- 0.051
+
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id, data= elections_con_panel_categoryLarge, weights = kernel_tri)
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+model2_1_clustered <- coeftest(model2_1, vcovCL(model2_1 ,cluster = ~election)) 
+
+#Model2
+elections_con_panel_categoryLarge$ln_baseline <- log(elections_con_panel_categoryLarge$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= elections_con_panel_categoryLarge, weights = kernel_tri)
+model2_2_clustered <- coeftest(model2_2, vcovCL(model2_2 ,cluster = ~election)) 
+
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id, data=elections_con_panel_categoryLarge)
+model2_3_clustered <- coeftest(model2_3, vcovCL(model2_3 ,cluster = ~election)) 
+#no finite sample correction in stata, global method -> sample big enough
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data=elections_con_panel_categoryLarge)
+model2_4_clustered <-vcovCL(model2_4 ,cluster = ~election)
+#no finite sample correction in stata, global method -> sample big enough
+
+##LIGHTS LOCAL LINEAR##
+pols_lights_cons$sgroup <- factor(pols_lights_cons$sgroup)  
+pols_lights_cons$election_number <- factor(pols_lights_cons$election_number)  
+
+#Model1
+model2_5 <- lm (ln_diff ~ aligned + margin + m_a + election_number + sgroup + election_number:sgroup, data = pols_lights_cons, weights= kernel_tri)
+model2_5_clustered <- coeftest(model2_5, vcovCL(model2_5 ,cluster = ~sgroup)) 
+correction <-  (0.0169097/ 4.0657e-03)
+
+#Model2 
+model2_6 <- lm (ln_diff ~ aligned + margin + m_a + ln_baseline + election_number + sgroup + election_number:sgroup , data = pols_lights_cons, weights= kernel_tri)
+model2_6_clustered <- coeftest(model2_6, vcovCL(model2_6 ,cluster = ~sgroup)) 
+correction2 <-  0.0164474/0.00395386 
+
+# Replication of table (excluding model2_5 and model2_6)
+models <- list(
+  "(1)" = model2_1,
+  "(2)" = model2_2,
+  "(3)" = model2_3,
+  "(4)" = model2_4
+)
+
+# Labels
+coef_labels <- c(
+  "aligned" = "Ruling party",
+  "margin" = "Margin of victory",
+  "m_a" = "Margin x ruling",
+  "ln_baseline" = "Baseline log employment"
+)
+
+# Rows to add later
+rows <- tibble::tribble(
+  ~term, ~Multivariate, ~Multivariate, ~Multivariate, ~Multivariate,
+  'State-year fixed effects', 'Yes', 'Yes', 'Yes', 'Yes',
+  'Constituency controls', 'No', 'Yes', 'No', 'Yes'
+)
+attr(rows, 'position') <- c(9, 10)
+
+# Adding custom titles for each pair of models
+titles <- c("Jobs: Local Linear", "Jobs: Polynomial")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+# Define vcov functions for models
+vcov_model1 <- function(model) {
+  vcovCL(model, cluster = ~election) * (c^2)
+}
+
+vcov_model2 <- function(model) {
+  vcovCL(model, cluster = ~election)
+}
+
+# Apply lists
+vcov_list <- list(vcov_model1, vcov_model2, vcov_model2, vcov_model2)
+
+# Final Table
+modelsummary(
+  models,
+  title = "Table 8: Effect of ruling party status on log employment growth (large avg firmsize)",
+  coef_map = coef_labels,
+  add_rows = rows,
+  vcov = vcov_list,
+  gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+```
+
+```{r}
+## Table9 Effect of ruling party status on log employment growth (including the firm size category as an independent variable)
+
+#define bandwidth
+bandwidth <- 0.051
+
+###JOBS LOCAL LINEAR###
+#Model1
+model2_1 <- lm(growth ~ aligned + margin + m_a + period + state_id + period:state_id + firm_size_category, data= elections_con_panel, weights = kernel_tri)
+# Compute error correction factor(See above)
+c <- 3.4199/0.6920
+model2_1_clustered <- coeftest(model2_1, vcovCL(model2_1 ,cluster = ~election)) 
+
+#Model2
+elections_con_panel$ln_baseline <- log(elections_con_panel$baseline)
+model2_2 <- lm(growth ~ aligned + margin + m_a + ln_baseline + period + state_id + period:state_id + firm_size_category + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data= elections_con_panel, weights = kernel_tri)
+model2_2_clustered <- coeftest(model2_2, vcovCL(model2_2 ,cluster = ~election)) 
+
+
+###JOBS POLYNOMIAL###
+#Model1
+model2_3 <- lm(growth ~ aligned+ margin + m_a + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + firm_size_category, data=elections_con_panel)
+model2_3_clustered <- coeftest(model2_3, vcovCL(model2_3 ,cluster = ~election)) 
+#no finite sample correction in stata, global method -> sample big enough
+
+#Model2
+model2_4 <- lm(growth ~ aligned+ margin + m_a + ln_baseline + m2 + m3 + m2_a + m3_a + period + state_id + period:state_id + firm_size_category + pc91_vd_app_pr + pc91_vd_power_supl + p_sch_r91 + irr_share91 + pc91u_td_p_road + el_con91 + p_sch_u91, data=elections_con_panel)
+model2_4_clustered <-vcovCL(model2_4 ,cluster = ~election)
+#no finite sample correction in stata, global method -> sample big enough
+
+##LIGHTS LOCAL LINEAR##
+pols_lights_cons$sgroup <- factor(pols_lights_cons$sgroup)  
+pols_lights_cons$election_number <- factor(pols_lights_cons$election_number)  
+
+#Model1
+model2_5 <- lm (ln_diff ~ aligned + margin + m_a + election_number + sgroup + election_number:sgroup, data = pols_lights_cons, weights= kernel_tri)
+model2_5_clustered <- coeftest(model2_5, vcovCL(model2_5 ,cluster = ~sgroup)) 
+correction <-  (0.0169097/ 4.0657e-03)
+
+#Model2 
+model2_6 <- lm (ln_diff ~ aligned + margin + m_a + ln_baseline + election_number + sgroup + election_number:sgroup , data = pols_lights_cons, weights= kernel_tri)
+model2_6_clustered <- coeftest(model2_6, vcovCL(model2_6 ,cluster = ~sgroup)) 
+correction2 <-  0.0164474/0.00395386 
+
+# Replication of table (excluding model2_5 and model2_6)
+models <- list(
+  "(1)" = model2_1,
+  "(2)" = model2_2,
+  "(3)" = model2_3,
+  "(4)" = model2_4
+)
+
+# Labels
+coef_labels <- c(
+  "aligned" = "Ruling party",
+  "margin" = "Margin of victory",
+  "m_a" = "Margin x ruling",
+  "ln_baseline" = "Baseline log employment",
+  "firm_size_categoryMedium" = "firm_size_categoryMedium",
+  "firm_size_categoryLarge" = "firm_size_categoryLarge"
+)
+
+# Rows to add later
+rows <- tibble::tribble(
+  ~term, ~Multivariate, ~Multivariate, ~Multivariate, ~Multivariate,
+  'State-year fixed effects', 'Yes', 'Yes', 'Yes', 'Yes',
+  'Constituency controls', 'No', 'Yes', 'No', 'Yes'
+)
+attr(rows, 'position') <- c(9, 10)
+
+# Adding custom titles for each pair of models
+titles <- c("Jobs: Local Linear", "Jobs: Polynomial")
+
+# Updating model names with titles
+names(models) <- glue("{titles[ceiling(seq_along(models) / 2)]} - Model {seq_along(models)}")
+
+# Define vcov functions for models
+vcov_model1 <- function(model) {
+  vcovCL(model, cluster = ~election) * (c^2)
+}
+
+vcov_model2 <- function(model) {
+  vcovCL(model, cluster = ~election)
+}
+
+# Apply lists
+vcov_list <- list(vcov_model1, vcov_model2, vcov_model2, vcov_model2)
+
+# Final Table
+modelsummary(
+  models,
+  title = "Table 9: Effect of ruling party status on log employment growth (including the category of average firm size",
+  coef_map = coef_labels,
+  add_rows = rows,
+  vcov = vcov_list,
+  gof_omit = "RMSE|AIC|BIC|Log.Lik.|R2 Adj.|Std.Errors")
+```
+
